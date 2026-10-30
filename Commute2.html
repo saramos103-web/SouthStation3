@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Boston Transit & Weather Dashboard</title>
+  
+  <!-- Leaflet CSS & JS for Live Map -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #fff;
+      min-height: 100vh;
+      background-color: #121212;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Fixed full-screen live map background */
+    #map-bg {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 0;
+    }
+
+    /* Dark overlay so map doesn't interfere with card legibility */
+    #map-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(18, 18, 18, 0.60);
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    /* Container pinned to the left side */
+    .dashboard-container {
+      position: absolute;
+      top: 2rem;
+      left: 2rem;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      width: 340px;
+    }
+
+    .card {
+      background: rgba(30, 30, 30, 0.85); /* Glassmorphic dark card */
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1.5px solid rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 1rem;
+    }
+
+    .badge {
+      background: #DA291C;
+      font-weight: bold;
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+
+    .weather-badge {
+      background: #0288d1;
+      font-weight: bold;
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+
+    .item {
+      display: flex;
+      flex-direction: column;
+      background: rgba(42, 42, 42, 0.8);
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      gap: 4px;
+    }
+
+    .item:last-child {
+      margin-bottom: 0;
+    }
+
+    .time { 
+      font-size: 1.1rem; 
+      font-weight: bold; 
+      color: #4caf50; 
+    }
+
+    .status-text {
+      font-size: 1rem;
+      color: #ff9800;
+    }
+
+    .temp-large {
+      font-size: 1.8rem;
+      font-weight: bold;
+      color: #00bcd4;
+    }
+
+    .weather-desc {
+      font-size: 0.95rem;
+      color: #e0e0e0;
+      margin-bottom: 4px;
+    }
+
+    .footer {
+      position: fixed;
+      bottom: 1rem;
+      left: 2rem;
+      z-index: 2;
+      color: #ccc;
+      font-size: 0.8rem;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+      background: rgba(0,0,0,0.5);
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+
+    /* Custom station marker label styles */
+    .station-tooltip {
+      background: rgba(20, 20, 20, 0.9) !important;
+      border: 1px solid #DA291C !important;
+      color: #ffffff !important;
+      font-size: 0.75rem !important;
+      font-weight: bold !important;
+      border-radius: 4px !important;
+      padding: 3px 7px !important;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5) !important;
+    }
+  </style>
+</head>
+<body>
+
+<div id="map-bg"></div>
+<div id="map-overlay"></div>
+
+<div class="dashboard-container">
+  <!-- Commute -->
+  <div class="card">
+    <div class="header">
+      <span class="badge">RL</span>
+      <div>
+        <h2 style="margin:0; font-size: 1.1rem;">Shawmut &rarr; Boston</h2>
+        <small style="color:#aaa;">Next 2 Train ETA</small>
+      </div>
+    </div>
+    <div id="shawmut-results">Loading...</div>
+  </div>
+
+  <!-- Boston Weather Card -->
+  <div class="card">
+    <div class="header">
+      <span class="weather-badge">WX</span>
+      <div>
+        <h2 style="margin:0; font-size: 1.2rem;">Boston Weather</h2>
+        <small style="color:#aaa;">Live & Today's Forecast</small>
+      </div>
+    </div>
+    <div id="weather-results">Loading weather...</div>
+  </div>
+</div>
+
+<div class="footer" id="last-updated">Updating...</div>
+
+<script>
+  // MBTA Official Line Colors
+  const LINE_COLORS = {
+    'Red': '#DA291C',
+    'Orange': '#ED8B00',
+    'Blue': '#003DA5',
+    'Green-B': '#00843D',
+    'Green-C': '#00843D',
+    'Green-D': '#00843D',
+    'Green-E': '#00843D'
+  };
+
+  // --- 1. INITIALIZE LIVE MAP BACKGROUND ---
+  const map = L.map('map-bg', {
+    zoomControl: false,
+    attributionControl: false
+  }).setView([42.3320, -71.0620], 12); // Positioned to frame Shawmut, South Station, and Core Subway Lines
+
+  // Free, keyless Esri Dark Gray canvas tiles
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 16
+  }).addTo(map);
+
+  const trainMarkers = {};
+
+  // --- 2. ADD SUBTLE CALLOUTS FOR SHAWMUT & SOUTH STATION ---
+  function addStationCallouts() {
+    // Shawmut Station [Lat, Lng]
+    const shawmutMarker = L.circleMarker([42.2921, -71.0658], {
+      radius: 5,
+      fillColor: '#DA291C',
+      color: '#ffffff',
+      weight: 1.5,
+      opacity: 1,
+      fillOpacity: 0.9
+    }).addTo(map);
+
+    shawmutMarker.bindTooltip("Shawmut Station", {
+      permanent: true,
+      direction: 'right',
+      className: 'station-tooltip'
+    });
+
+    // South Station [Lat, Lng]
+    const southStationMarker = L.circleMarker([42.3523, -71.0552], {
+      radius: 5,
+      fillColor: '#DA291C',
+      color: '#ffffff',
+      weight: 1.5,
+      opacity: 1,
+      fillOpacity: 0.9
+    }).addTo(map);
+
+    southStationMarker.bindTooltip("South Station", {
+      permanent: true,
+      direction: 'right',
+      className: 'station-tooltip'
+    });
+  }
+
+  // --- 3. FETCH AND DRAW CLEAN MBTA SUBWAY LINE TRACKS ---
+  async function drawSubwayLines() {
+    const routes = ['Red', 'Orange', 'Blue', 'Green-B', 'Green-C', 'Green-D', 'Green-E'];
+    for (const routeId of routes) {
+      try {
+        const res = await fetch(`https://api-v3.mbta.com/shapes?filter[route]=${routeId}`);
+        const json = await res.json();
+        const shapes = json.data || [];
+
+        shapes.forEach(shape => {
+          const polylineStr = shape.attributes.polyline;
+          if (polylineStr) {
+            const coordinates = decodePolyline(polylineStr);
+            L.polyline(coordinates, {
+              color: LINE_COLORS[routeId] || '#ffffff',
+              weight: routeId.startsWith('Green') ? 2 : 3, // Slightly lighter weight for Green Line branch overlays
+              opacity: 0.65
+            }).addTo(map);
+          }
+        });
+      } catch (err) {
+        console.error(`Error loading track shape for ${routeId}:`, err);
+      }
+    }
+  }
+
+  // Google Encoded Polyline Algorithm Decoder
+  function decodePolyline(encoded) {
+    let points = [];
+    let index = 0, len = encoded.length;
+    let lat = 0, lng = 0;
+
+    while (index < len) {
+      let b, shift = 0, result = 0;
+      do {
+        b = encoded.charCodeAt(index++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+      let dlat = ((result & 1) ? ~(result >> 1) : (result >> 1));
+      lat += dlat;
+
+      shift = 0;
+      result = 0;
+      do {
+        b = encoded.charCodeAt(index++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+      let dlng = ((result & 1) ? ~(result >> 1) : (result >> 1));
+      lng += dlng;
+
+      points.push([lat / 1e5, lng / 1e5]);
+    }
+    return points;
+  }
+
+  // --- 4. STREAM LIVE VEHICLE POSITIONS ACROSS ALL LINES ---
+  async function updateLiveTrainPositions() {
+    const routeFilter = 'Red,Orange,Blue,Green-B,Green-C,Green-D,Green-E';
+    try {
+      const res = await fetch(`https://api-v3.mbta.com/vehicles?filter[route]=${routeFilter}`);
+      const json = await res.json();
+      const vehicles = json.data || [];
+
+      vehicles.forEach(vehicle => {
+        const id = vehicle.id;
+        const lat = vehicle.attributes.latitude;
+        const lng = vehicle.attributes.longitude;
+        const label = vehicle.attributes.label || 'Train';
+        const routeId = vehicle.relationships?.route?.data?.id || 'Red';
+        const lineColor = LINE_COLORS[routeId] || '#DA291C';
+
+        if (lat && lng) {
+          if (trainMarkers[id]) {
+            trainMarkers[id].setLatLng([lat, lng]);
+          } else {
+            trainMarkers[id] = L.circleMarker([lat, lng], {
+              radius: 6,
+              fillColor: lineColor,
+              color: '#ffffff',
+              weight: 1.5,
+              opacity: 1,
+              fillOpacity: 0.95
+            }).addTo(map).bindTooltip(`${routeId} Line (${label})`);
+          }
+        }
+      });
+    } catch (err) {
+      console.error('Error fetching live vehicle coordinates:', err);
+    }
+  }
+
+  // --- 5. TRANSIT DATA & CARD RENDERING ---
+  async function updateDashboard() {
+    const url = 'https://api-v3.mbta.com/predictions?filter[stop]=place-smmnl,place-sstat&filter[route]=Red&include=trip,stop';
+    
+    try {
+      const res = await fetch(url);
+      const json = await res.json();
+      const predictions = json.data || [];
+
+      const stopParent = {};
+      if (json.included) {
+        json.included.forEach(item => {
+          if (item.type === 'stop') {
+            stopParent[item.id] = item.relationships?.parent_station?.data?.id;
+          }
+        });
+      }
+
+      const sstatArrivals = {};
+      predictions.forEach(p => {
+        const stopId = p.relationships.stop?.data?.id;
+        if (stopParent[stopId] === 'place-sstat' && p.attributes.direction_id === 1) {
+          const tripId = p.relationships.trip?.data?.id;
+          if (tripId) {
+            sstatArrivals[tripId] = p.attributes.arrival_time || p.attributes.departure_time;
+          }
+        }
+      });
+
+      const shawmutPreds = predictions.filter(p => {
+        const stopId = p.relationships.stop?.data?.id;
+        return stopParent[stopId] === 'place-smmnl' && p.attributes.direction_id === 1;
+      });
+
+      renderShawmutCard('shawmut-results', shawmutPreds, sstatArrivals);
+
+      document.getElementById('last-updated').textContent = `Last updated: ${new Date().toLocaleTimeString()} (Auto-refreshing)`;
+
+    } catch (err) {
+      console.error('Error fetching MBTA predictions:', err);
+      document.getElementById('shawmut-results').innerHTML = '<div style="color:#aaa; padding: 12px 0;">Transit data unavailable.</div>';
+    }
+  }
+
+  function renderShawmutCard(elementId, preds, sstatArrivals) {
+    const container = document.getElementById(elementId);
+    container.innerHTML = '';
+
+    if (!preds || preds.length === 0) {
+      container.innerHTML = '<div style="color:#aaa; padding: 12px 0;">No upcoming predictions.</div>';
+      return;
+    }
+
+    preds.sort((a, b) => {
+      const timeA = new Date(a.attributes.arrival_time || a.attributes.departure_time);
+      const timeB = new Date(b.attributes.arrival_time || b.attributes.departure_time);
+      return timeA - timeB;
+    });
+
+    preds.slice(0, 2).forEach(pred => {
+      const tripId = pred.relationships.trip?.data?.id;
+      const rawTime = pred.attributes.arrival_time || pred.attributes.departure_time;
+      const status = pred.attributes.status;
+      const shawmutEtaMins = Math.round((new Date(rawTime) - new Date()) / 60000);
+      
+      let trainDisplay = '';
+      if (status) {
+        trainDisplay = `<span class="status-text">${status}</span>`;
+      } else if (shawmutEtaMins <= 0) {
+        trainDisplay = `<span class="time">ARR at Shawmut</span>`;
+      } else if (shawmutEtaMins >= 1 && shawmutEtaMins < 2) {
+        trainDisplay = `<span class="time">${shawmutEtaMins} Minute</span>`;
+      } else {
+        trainDisplay = `<span class="time">${shawmutEtaMins} Minutes</span>`;
+      }
+
+      let sstatDisplay = '';
+      if (tripId && sstatArrivals[tripId]) {
+        const arrivalTime = new Date(sstatArrivals[tripId]);
+        const sstatMins = Math.round((arrivalTime - new Date()) / 60000);
+        const formattedArrivalTime = arrivalTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        sstatDisplay = `ETA: <strong>${formattedArrivalTime}</strong> (${sstatMins > 0 ? sstatMins + 'm' : 'Due'})`;
+      } else {
+        const estArrival = new Date(new Date(rawTime).getTime() + 11 * 60000);
+        const formattedEst = estArrival.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        const estMins = Math.round((estArrival - new Date()) / 60000);
+        sstatDisplay = `ETA: <strong>${formattedEst}</strong> (~${estMins}m)`;
+      }
+
+      const formattedShawmutTime = rawTime 
+        ? new Date(rawTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+        : '--:--';
+
+      const div = document.createElement('div');
+      div.className = 'item';
+      div.innerHTML = `
+        <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
+          <span style="color: #aaa; font-size: 0.85rem;">Departs ${formattedShawmutTime}</span>
+          <div>${trainDisplay}</div>
+        </div>
+        <div style="font-size: 0.9rem; color: #4caf50; border-top: 1px solid #333; padding-top: 6px; margin-top: 2px;">
+          ${sstatDisplay}
+        </div>
+      `;
+      container.appendChild(div);
+    });
+  }
+
+  // --- 6. BOSTON WEATHER INTEGRATION ---
+  async function updateWeather() {
+    const weatherUrl = 'https://api.open-meteo.com/v1/forecast?latitude=42.3601&longitude=-71.0589&current=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&temperature_unit=fahrenheit&timezone=America%2FNew_York';
+
+    try {
+      const res = await fetch(weatherUrl);
+      const data = await res.json();
+
+      const currentTemp = Math.round(data.current.temperature_2m);
+      const todayMax = Math.round(data.daily.temperature_2m_max[0]);
+      const todayMin = Math.round(data.daily.temperature_2m_min[0]);
+      const precipProb = data.daily.precipitation_probability_max[0];
+      const weatherDesc = getWeatherCondition(data.current.weather_code);
+
+      const container = document.getElementById('weather-results');
+      container.innerHTML = `
+        <div class="item">
+          <div>
+            <div class="weather-desc"><strong>Now:</strong> ${weatherDesc}</div>
+            <small style="color:#aaa;">High: ${todayMax}°F | Low: ${todayMin}°F</small>
+          </div>
+          <div class="temp-large">${currentTemp}°F</div>
+        </div>
+        <div class="item">
+          <div>
+            <div><strong>Rain Chance</strong></div>
+            <small style="color:#aaa;">Max precipitation today</small>
+          </div>
+          <div class="time" style="color: #2196f3;">${precipProb}%</div>
+        </div>
+      `;
+
+    } catch (err) {
+      console.error('Error fetching weather:', err);
+      document.getElementById('weather-results').innerHTML = '<div style="color:#aaa;">Weather unavailable.</div>';
+    }
+  }
+
+  function getWeatherCondition(code) {
+    if (code === 0) return 'Clear Sky';
+    if (code >= 1 && code <= 3) return 'Partly Cloudy';
+    if (code >= 45 && code <= 48) return 'Foggy';
+    if (code >= 51 && code <= 55) return 'Drizzle';
+    if (code >= 61 && code <= 65) return 'Rain';
+    if (code >= 71 && code <= 77) return 'Snow';
+    if (code >= 80 && code <= 82) return 'Rain Showers';
+    if (code >= 95) return 'Thunderstorm';
+    return 'Overcast';
+  }
+
+  // --- INITIAL EXECUTION & INTERVALS ---
+  addStationCallouts();        // Add Shawmut and South Station labels
+  drawSubwayLines();            // Draw tracks once at startup
+  updateLiveTrainPositions();   // Initial train position pull
+  updateDashboard();            // Transit prediction card
+  updateWeather();              // Weather card
+
+  setInterval(updateLiveTrainPositions, 5000); // Live vehicle movement (every 5s)
+  setInterval(updateDashboard, 5000);          // Transit Predictions (every 5s)
+  setInterval(updateWeather, 600000);           // Weather updates (every 10m)
+</script>
+
+</body>
+</html>
